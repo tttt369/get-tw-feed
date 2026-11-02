@@ -34,6 +34,7 @@ class State:
     SEEN_DIR = Path("seen")
     FEED_DIR = Path("feed")
     REPORT_DIR = Path("report")
+    PROMPT_DIR = Path("prompt")
 
     TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
     FEED_FILENAME_RE = re.compile(r"^(\d{8}_\d{6})-(\d{8}_\d{6})\.json$")
@@ -47,7 +48,7 @@ class State:
 
     LOGGER = logging.getLogger("twitter_feed")
 
-    PROMPT = """いままでのTwitter/Xの情報を読み、ツイートを以下の分類に分けて、分類ごとに「誰が何を言っているか」をマークダウン形式でまとめてください。
+    PROMPT = """いままでのTwitter/Xの情報を読み、ツイートを以下の分類に分けて、分類ごとに「誰が何を言っているか」をまとめてください。
 
 【分類】
 - イベント
@@ -58,20 +59,14 @@ class State:
 - 不明
 
 【要件】
-1. 上記の分類ごとにセクション（##）を設け、誰がどのような発言・投稿を行っているかをまとめてください。
+1. 上記の分類ごとにセクションを設け、誰がどのような発言・投稿を行っているかをまとめてください。
 2. ユーザーの投稿ごとに必ずインデント（字下げ）を空け、見出しや箇条書きの階層構造を明確にしてください。
 3. ソース項目には、余計な日本語の補足説明（アーティスト名、曲名、動画タイトルなど）を絶対に追加しないでください。URLのテキストリンク自体も、説明文にせずURLをそのまま書き込んでください。
 
-【出力フォーマット（厳密遵守）】
-必ず以下の構造と文字列のみを使用し、完全に固定した形で出力してください。
-
-## [分類名]
-
-### [ユーザー名]
-* **内容**: 
-    * [発言内容の要約]
-    * **ソース**:
-        * 記載リンク: [URLをそのまま記述]
+eg, 
+[分類名]
+    [ユーザー名]
+        [発言内容の要約]
 """
 
     HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -705,6 +700,16 @@ class Pipeline:
         )
 
     @staticmethod
+    def save_prompt(feed_path: Path, prompt: str) -> Path:
+        """Save the prompt text to the prompt/ directory."""
+
+        State.PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+        prompt_path = State.PROMPT_DIR / f"prompt_{feed_path.stem}.txt"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        State.LOGGER.info("Saved prompt to: %s", prompt_path)
+        return prompt_path
+
+    @staticmethod
     def run(options: RunOptions) -> str:
         """Run the requested stages and return the summary text."""
 
@@ -735,10 +740,12 @@ class Pipeline:
             )
 
         prompt = Pipeline.build_prompt(simplified)
+        Pipeline.save_prompt(feed_path, prompt)
 
         if options.prompt_only:
-            # Actual program output (not a log), so it can be piped or
-            # redirected cleanly while logs go to stderr.
+            State.LOGGER.info(
+                "Skipping LLM request and report generation (--prompt-only)."
+            )
             print(prompt)
             return prompt
 
@@ -822,8 +829,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--prompt-only",
         action="store_true",
         help=(
-            "Print the prompt that would be sent to the LLM, then exit "
-            "without calling the model or writing a report."
+            "Save the prompt to prompt/ but skip the LLM request "
+            "and report generation."
         ),
     )
 
@@ -844,11 +851,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Model name (default: %(default)s).",
     )
 
+
+    parser.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress progress logs (errors are still printed).",
+    )
+
     return parser
 
-def setup_logger() -> None:
+def setup_logger(level: int = logging.INFO) -> None:
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s %(levelname)-7s %(message)s",
         datefmt="%H:%M:%S",
     )
@@ -861,8 +875,9 @@ def build_options(args: argparse.Namespace) -> RunOptions:
     )
 
 def main(argv: Sequence[str] | None = None) -> None:
-    setup_logger()
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    setup_logger(logging.ERROR if args.quiet else logging.INFO)
     options = build_options(args)
 
     try:
@@ -870,7 +885,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         State.LOGGER.error("%s", exc)
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
