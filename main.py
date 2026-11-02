@@ -4,8 +4,6 @@ import csv
 import html
 import json
 import logging
-import os
-import re
 import sys
 from collections.abc import Sequence
 from contextlib import aclosing
@@ -20,104 +18,16 @@ from dateutil import parser as dateutil_parser
 from twscrape import API
 from twscrape.models import Tweet
 
-class State:
-    JST = timezone(timedelta(hours=9))
-
-    ACCOUNT_ID = 1544873887363903489  # asdf62608926
-
-    FOLLOWING_LIMIT = 100    # Maximum followed accounts to enumerate.
-    SEARCH_LIMIT = 50        # Maximum tweets per search query.
-    TIMELINE_LIMIT = 50      # Maximum tweets read per user timeline.
-    OLD_TWEETS_LIMIT = 10    # Maximum older tweets kept per inactive user.
-    SEARCH_CHUNK_SIZE = 10   # Accounts combined into a single search query.
-
-    SEEN_DIR = Path("seen")
-    FEED_DIR = Path("feed")
-    REPORT_DIR = Path("report")
-    PROMPT_DIR = Path("prompt")
-
-    TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
-    FEED_FILENAME_RE = re.compile(r"^(\d{8}_\d{6})-(\d{8}_\d{6})\.json$")
-
-    DEFAULT_BASE_URL = "http://localhost:2048/v1"
-    DEFAULT_MODEL = "gemini-3.8-flash"
-    DEFAULT_API_KEY = "123456"
-    REQUEST_TIMEOUT = 300.0
-
-    REPORT_FORMATS = ("md", "html")
-
-    LOGGER = logging.getLogger("twitter_feed")
-
-    PROMPT = """いままでのTwitter/Xの情報を読み、ツイートを以下の分類に分けて、分類ごとに「誰が何を言っているか」をまとめてください。
-
-【分類】
-- イベント
-- 告知
-- コミュニティー
-- 日常
-- その他
-- 不明
-
-【要件】
-1. 上記の分類ごとにセクションを設け、誰がどのような発言・投稿を行っているかをまとめてください。
-2. ユーザーの投稿ごとに必ずインデント（字下げ）を空け、見出しや箇条書きの階層構造を明確にしてください。
-3. ソース項目には、余計な日本語の補足説明（アーティスト名、曲名、動画タイトルなど）を絶対に追加しないでください。URLのテキストリンク自体も、説明文にせずURLをそのまま書き込んでください。
-
-eg, 
-[分類名]
-    [ユーザー名]
-        [発言内容の要約]
-"""
-
-    HTML_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__TITLE__</title>
-<style>
-  body {
-    margin: 0 auto;
-    padding: 2rem 1.25rem 4rem;
-    max-width: 50rem;
-    line-height: 1.75;
-    font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic",
-      Meiryo, system-ui, -apple-system, sans-serif;
-    color: #1f2328;
-    background: #ffffff;
-  }
-  h1 {
-    margin: 0 0 1.5rem;
-    padding-bottom: 0.6rem;
-    font-size: 1.6rem;
-    border-bottom: 2px solid #d0d7de;
-  }
-  h2 {
-    margin-top: 2.2rem;
-    padding-bottom: 0.3rem;
-    font-size: 1.3rem;
-    border-bottom: 1px solid #eaeef2;
-  }
-  h3 { margin-top: 1.6rem; font-size: 1.05rem; }
-  a { color: #0969da; }
-  ul { padding-left: 1.4rem; }
-  li { margin: 0.3rem 0; }
-  hr { border: 0; border-top: 1px solid #d0d7de; }
-</style>
-</head>
-<body>
-<h1>__TITLE__</h1>
-__HTML_BODY__
-</body>
-</html>
-"""
-
+try:
+    from _config import Config
+except:
+    from config import Config
 
 @dataclass
 class RunOptions:
-    url: str = State.DEFAULT_BASE_URL
-    api_key: str = State.DEFAULT_API_KEY
-    model: str = State.DEFAULT_MODEL
+    url: str = Config.DEFAULT_BASE_URL
+    api_key: str = Config.DEFAULT_API_KEY
+    model: str = Config.DEFAULT_MODEL
 
     fetch: bool = True
     merge: bool = True
@@ -143,7 +53,7 @@ class Post:
         if not raw_date:
             return None
 
-        return dateutil_parser.isoparse(str(raw_date)).astimezone(State.JST)
+        return dateutil_parser.isoparse(str(raw_date)).astimezone(Config.JST)
 
     @staticmethod
     def format_hashtags(raw_hashtags: Any) -> str:
@@ -164,7 +74,7 @@ class Seen:
     def load(directory: Path | None = None) -> set[str]:
         """Read every seen-IDs CSV file into a set of tweet IDs."""
 
-        directory = State.SEEN_DIR if directory is None else directory
+        directory = Config.SEEN_DIR if directory is None else directory
 
         ids: set[str] = set()
         if not directory.is_dir():
@@ -175,7 +85,7 @@ class Seen:
                 with path.open("r", newline="", encoding="utf-8") as file:
                     ids.update(row[0] for row in csv.reader(file) if row)
             except OSError as exc:
-                State.LOGGER.warning("Could not read seen-IDs file %s: %s", path, exc)
+                Config.LOGGER.warning("Could not read seen-IDs file %s: %s", path, exc)
 
         return ids
 
@@ -183,9 +93,9 @@ class Seen:
     def start_run(now: datetime, directory: Path | None = None) -> Path:
         """Create the CSV file that this run appends new IDs to."""
 
-        directory = State.SEEN_DIR if directory is None else directory
+        directory = Config.SEEN_DIR if directory is None else directory
         directory.mkdir(parents=True, exist_ok=True)
-        run_file = directory / f"{now.strftime(State.TIMESTAMP_FORMAT)}.csv"
+        run_file = directory / f"{now.strftime(Config.TIMESTAMP_FORMAT)}.csv"
         run_file.touch()
 
         return run_file
@@ -202,14 +112,14 @@ class Seen:
 class Feed:
     @staticmethod
     def build(tweets: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        """Group raw tweet dicts into ``{user_id: {profile, posts}}``. """
+        """Group raw tweet dicts into ``{user_id: {profile, posts}}``."""
 
         feed: dict[str, dict[str, Any]] = {}
         for tweet in tweets:
             user = tweet.get("user") or {}
             user_id = str(user.get("id_str") or "")
             if not user_id:
-                State.LOGGER.warning(
+                Config.LOGGER.warning(
                     "Skipping tweet %s without a user ID.", tweet.get("id_str")
                 )
                 continue
@@ -232,21 +142,21 @@ class Feed:
     def find_active(now: datetime) -> Path | None:
         """Return the feed file whose validity window contains ``now``."""
 
-        if not State.FEED_DIR.is_dir():
+        if not Config.FEED_DIR.is_dir():
             return None
 
-        for path in sorted(State.FEED_DIR.glob("*.json")):
-            match = State.FEED_FILENAME_RE.match(path.name)
+        for path in sorted(Config.FEED_DIR.glob("*.json")):
+            match = Config.FEED_FILENAME_RE.match(path.name)
             if not match:
                 continue
             try:
                 valid_until = datetime.strptime(
-                    match.group(1), State.TIMESTAMP_FORMAT
-                ).replace(tzinfo=State.JST)
+                    match.group(1), Config.TIMESTAMP_FORMAT
+                ).replace(tzinfo=Config.JST)
 
                 valid_from = datetime.strptime(
-                    match.group(2), State.TIMESTAMP_FORMAT
-                ).replace(tzinfo=State.JST)
+                    match.group(2), Config.TIMESTAMP_FORMAT
+                ).replace(tzinfo=Config.JST)
             except ValueError:
                 continue
 
@@ -263,7 +173,7 @@ class Feed:
             with path.open("r", encoding="utf-8") as file:
                 data = json.load(file)
         except (OSError, json.JSONDecodeError) as exc:
-            State.LOGGER.warning("Could not load feed file %s: %s", path, exc)
+            Config.LOGGER.warning("Could not load feed file %s: %s", path, exc)
             return {}
 
         return data if isinstance(data, dict) else {}
@@ -293,24 +203,24 @@ class Feed:
     def resolve_output(now: datetime, merge: bool) -> tuple[Path, dict[str, Any]]:
         """Choose the feed file to write and any existing feed to merge in."""
         if not merge:
-            path = State.FEED_DIR / (
-                f"latest-{now.strftime(State.TIMESTAMP_FORMAT)}.json"
+            path = Config.FEED_DIR / (
+                f"latest-{now.strftime(Config.TIMESTAMP_FORMAT)}.json"
             )
-            State.LOGGER.info("Creating standalone feed: %s", path)
+            Config.LOGGER.info("Creating standalone feed: %s", path)
             return path, {}
 
         active_path = Feed.find_active(now)
         if active_path is not None:
-            State.LOGGER.info("Appending to active feed: %s", active_path)
+            Config.LOGGER.info("Appending to active feed: %s", active_path)
             return active_path, Feed.load(active_path)
 
         valid_until = now + timedelta(hours=24)
-        path = State.FEED_DIR / (
-            f"{valid_until.strftime(State.TIMESTAMP_FORMAT)}-"
-            f"{now.strftime(State.TIMESTAMP_FORMAT)}.json"
+        path = Config.FEED_DIR / (
+            f"{valid_until.strftime(Config.TIMESTAMP_FORMAT)}-"
+            f"{now.strftime(Config.TIMESTAMP_FORMAT)}.json"
         )
 
-        State.LOGGER.info("Creating new active feed: %s", path)
+        Config.LOGGER.info("Creating new active feed: %s", path)
 
         return path, {}
 
@@ -324,7 +234,7 @@ class Feed:
         """Reduce raw feed data to the fields the model needs."""
 
         if today is None or yesterday is None:
-            now = datetime.now(State.JST)
+            now = datetime.now(Config.JST)
             today = today or now.strftime("%Y-%m-%d")
             yesterday = yesterday or (now - timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -367,10 +277,10 @@ class Feed:
     def find_newest() -> Path | None:
         """Return the most recently modified feed file, if any."""
 
-        if not State.FEED_DIR.is_dir():
+        if not Config.FEED_DIR.is_dir():
             return None
 
-        feed_files = list(State.FEED_DIR.glob("*.json"))
+        feed_files = list(Config.FEED_DIR.glob("*.json"))
         if not feed_files:
             return None
 
@@ -386,7 +296,7 @@ class Feed:
                 "Feed file not found. Pass --feed PATH or check the feed/ directory."
             )
 
-        State.LOGGER.info("Reading raw data from: %s", target)
+        Config.LOGGER.info("Reading raw data from: %s", target)
 
         try:
             with target.open("r", encoding="utf-8") as file:
@@ -403,12 +313,12 @@ class Feed:
 class Fetch:
     @staticmethod
     async def following(api: API) -> list[str]:
-        """Return the usernames followed by ``State.ACCOUNT_ID``."""
+        """Return the usernames followed by ``Config.ACCOUNT_ID``."""
 
         return [
             user.username
             async for user in api.following(
-                State.ACCOUNT_ID, limit=State.FOLLOWING_LIMIT
+                Config.ACCOUNT_ID, limit=Config.FOLLOWING_LIMIT
             )
         ]
 
@@ -426,8 +336,8 @@ class Fetch:
         until_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
         chunks = [
-            usernames[start : start + State.SEARCH_CHUNK_SIZE]
-            for start in range(0, len(usernames), State.SEARCH_CHUNK_SIZE)
+            usernames[start : start + Config.SEARCH_CHUNK_SIZE]
+            for start in range(0, len(usernames), Config.SEARCH_CHUNK_SIZE)
         ]
 
         tweets: list[dict[str, Any]] = []
@@ -436,11 +346,11 @@ class Fetch:
         for index, chunk in enumerate(chunks, start=1):
             accounts_clause = " OR ".join(f"from:{name}" for name in chunk)
             query = f"({accounts_clause}) since:{since_date} until:{until_date}"
-            State.LOGGER.info("[%d/%d] Searching: %s", index, len(chunks), query)
+            Config.LOGGER.info("[%d/%d] Searching: %s", index, len(chunks), query)
 
             try:
                 async with aclosing(
-                    api.search(query, limit=State.SEARCH_LIMIT)
+                    api.search(query, limit=Config.SEARCH_LIMIT)
                 ) as stream:
                     async for tweet in stream:
                         if not Post.is_recent(tweet.date, now):
@@ -455,7 +365,7 @@ class Fetch:
                         Seen.record(seen_ids, run_file, tweet.id_str)
                         tweets.append(json.loads(tweet.json()))
             except Exception as exc:  # Keep one failing chunk from aborting the run.
-                State.LOGGER.warning("Search failed for chunk %d: %s", index, exc)
+                Config.LOGGER.warning("Search failed for chunk %d: %s", index, exc)
 
         tweets.sort(key=lambda tweet: tweet.get("date", ""), reverse=True)
 
@@ -473,19 +383,19 @@ class Fetch:
 
         user = await api.user_by_login(username)
         if not user:
-            State.LOGGER.warning("User not found: %s", username)
+            Config.LOGGER.warning("User not found: %s", username)
             return []
 
         recent: list[tuple[Tweet, bool]] = []
         older: list[tuple[Tweet, bool]] = []
 
         async with aclosing(
-            api.user_tweets(user.id, limit=State.TIMELINE_LIMIT)
+            api.user_tweets(user.id, limit=Config.TIMELINE_LIMIT)
         ) as stream:
             async for tweet in stream:
                 if (
-                    len(recent) + len(older) >= State.TIMELINE_LIMIT
-                    or len(older) >= State.OLD_TWEETS_LIMIT
+                    len(recent) + len(older) >= Config.TIMELINE_LIMIT
+                    or len(older) >= Config.OLD_TWEETS_LIMIT
                 ):
                     break
 
@@ -511,22 +421,22 @@ class Fetch:
         """Collect tweets and write them to the feed (see module docstring)."""
 
         now = datetime.now(timezone.utc)
-        now_jst = now.astimezone(State.JST)
+        now_jst = now.astimezone(Config.JST)
 
         seen_ids = Seen.load()
         run_file = Seen.start_run(now_jst)
 
         api = API()
         usernames = await Fetch.following(api)
-        State.LOGGER.info("Following %d users", len(usernames))
+        Config.LOGGER.info("Following %d users", len(usernames))
 
-        State.FEED_DIR.mkdir(parents=True, exist_ok=True)
+        Config.FEED_DIR.mkdir(parents=True, exist_ok=True)
         output_path, existing_feed = Feed.resolve_output(now_jst, merge)
 
         recent_tweets, active_usernames = await Fetch.search_recent(
             api, usernames, seen_ids, run_file, now
         )
-        State.LOGGER.info(
+        Config.LOGGER.info(
             "Search collected %d new tweets from %d active users",
             len(recent_tweets),
             len(active_usernames),
@@ -537,15 +447,15 @@ class Fetch:
             inactive_usernames = [
                 name for name in usernames if name not in active_usernames
             ]
-            State.LOGGER.info(
+            Config.LOGGER.info(
                 "Fetching timelines for %d inactive users", len(inactive_usernames)
             )
             for name in inactive_usernames:
                 tweets = await Fetch.user_timeline(api, name, seen_ids, run_file, now)
                 old_tweets.extend(tweets)
-                State.LOGGER.info("Collected %d new tweets from %s", len(tweets), name)
+                Config.LOGGER.info("Collected %d new tweets from %s", len(tweets), name)
         else:
-            State.LOGGER.info("Skipping old tweets from inactive users")
+            Config.LOGGER.info("Skipping old tweets from inactive users")
 
         feed = Feed.build(recent_tweets + old_tweets)
         if merge:
@@ -554,7 +464,7 @@ class Fetch:
         with output_path.open("w", encoding="utf-8") as file:
             json.dump(feed, file, indent=2, ensure_ascii=False)
 
-        State.LOGGER.info(
+        Config.LOGGER.info(
             "Wrote %d tweets to %s", len(recent_tweets) + len(old_tweets), output_path
         )
 
@@ -596,7 +506,7 @@ class LLM:
             "Content-Type": "application/json",
         }
 
-        State.LOGGER.info(
+        Config.LOGGER.info(
             "Sending request to %s (model: %s, history: %d messages)",
             endpoint,
             model,
@@ -604,7 +514,7 @@ class LLM:
         )
 
         try:
-            with httpx.Client(timeout=State.REQUEST_TIMEOUT) as client:
+            with httpx.Client(timeout=Config.REQUEST_TIMEOUT) as client:
                 response = client.post(
                     endpoint,
                     headers=headers,
@@ -640,18 +550,18 @@ class Report:
     def default_path(feed_path: Path) -> Path:
         """Return (and create the directory for) the default report path."""
 
-        State.REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        return State.REPORT_DIR / f"summary_{feed_path.stem}.md"
+        Config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        return Config.REPORT_DIR / f"summary_{feed_path.stem}.md"
 
     @staticmethod
     def save(output_file: str | Path, content: str, output_format: str) -> Path:
         """Save the summary as Markdown or HTML and return the written path."""
 
         output_format = output_format.lower()
-        if output_format not in State.REPORT_FORMATS:
+        if output_format not in Config.REPORT_FORMATS:
             raise ValueError(
                 f"Unsupported output format: {output_format!r}. "
-                f"Choose from {State.REPORT_FORMATS}."
+                f"Choose from {Config.REPORT_FORMATS}."
             )
 
         output_path = Path(output_file)
@@ -659,7 +569,7 @@ class Report:
 
         if output_format == "md":
             output_path.write_text(content, encoding="utf-8")
-            State.LOGGER.info("Saved Markdown report to: %s", output_path)
+            Config.LOGGER.info("Saved Markdown report to: %s", output_path)
             return output_path
 
         html_body = markdown.markdown(
@@ -668,22 +578,22 @@ class Report:
         )
 
         html_document = (
-            State.HTML_TEMPLATE
+            Config.HTML_TEMPLATE
             .replace("__TITLE__", html.escape(output_path.stem))
             .replace("__HTML_BODY__", html_body)
         )
 
-        State.REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        html_path = State.REPORT_DIR / f"{output_path.stem}.html"
+        Config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        html_path = Config.REPORT_DIR / f"{output_path.stem}.html"
         html_path.write_text(html_document, encoding="utf-8")
-        State.LOGGER.info("Saved HTML report to: %s", html_path)
+        Config.LOGGER.info("Saved HTML report to: %s", html_path)
 
-        if output_path.exists():
+        if output_path != html_path and output_path.exists():
             try:
                 output_path.unlink()
-                State.LOGGER.info("Removed intermediate Markdown file: %s", output_path)
+                Config.LOGGER.info("Removed intermediate Markdown file: %s", output_path)
             except OSError as exc:
-                State.LOGGER.warning("Could not remove %s: %s", output_path, exc)
+                Config.LOGGER.warning("Could not remove %s: %s", output_path, exc)
 
         return html_path
 
@@ -694,7 +604,7 @@ class Pipeline:
         """Assemble the full prompt: instructions followed by JSON data."""
         return "\n\n".join(
             [
-                State.PROMPT,
+                Config.PROMPT,
                 json.dumps(simplified, ensure_ascii=False, indent=2),
             ]
         )
@@ -703,10 +613,10 @@ class Pipeline:
     def save_prompt(feed_path: Path, prompt: str) -> Path:
         """Save the prompt text to the prompt/ directory."""
 
-        State.PROMPT_DIR.mkdir(parents=True, exist_ok=True)
-        prompt_path = State.PROMPT_DIR / f"prompt_{feed_path.stem}.txt"
+        Config.PROMPT_DIR.mkdir(parents=True, exist_ok=True)
+        prompt_path = Config.PROMPT_DIR / f"prompt_{feed_path.stem}.txt"
         prompt_path.write_text(prompt, encoding="utf-8")
-        State.LOGGER.info("Saved prompt to: %s", prompt_path)
+        Config.LOGGER.info("Saved prompt to: %s", prompt_path)
         return prompt_path
 
     @staticmethod
@@ -714,7 +624,7 @@ class Pipeline:
         """Run the requested stages and return the summary text."""
 
         if options.fetch:
-            State.LOGGER.info("Collecting tweets...")
+            Config.LOGGER.info("Collecting tweets...")
             asyncio.run(
                 Fetch.run(
                     include_old_posts=options.include_old_posts,
@@ -722,16 +632,16 @@ class Pipeline:
                 )
             )
         else:
-            State.LOGGER.info("Skipping tweet collection; using an existing feed.")
+            Config.LOGGER.info("Skipping tweet collection; using an existing feed.")
 
         feed_path, raw_feed = Feed.load_for_summary(options.feed)
 
-        State.LOGGER.info("Preparing tweet data...")
+        Config.LOGGER.info("Preparing tweet data...")
         simplified = Feed.simplify(raw_feed, only_recent=not options.include_old_posts)
 
         post_count = sum(len(user["posts"]) for user in simplified.values())
-        State.LOGGER.info("Users in feed: %d", len(simplified))
-        State.LOGGER.info("Tweets selected for summarization: %d", post_count)
+        Config.LOGGER.info("Users in feed: %d", len(simplified))
+        Config.LOGGER.info("Tweets selected for summarization: %d", post_count)
 
         if post_count == 0:
             raise ValueError(
@@ -743,13 +653,13 @@ class Pipeline:
         Pipeline.save_prompt(feed_path, prompt)
 
         if options.prompt_only:
-            State.LOGGER.info(
+            Config.LOGGER.info(
                 "Skipping LLM request and report generation (--prompt-only)."
             )
             print(prompt)
             return prompt
 
-        State.LOGGER.info("Sending tweets to the LLM for summarization...")
+        Config.LOGGER.info("Sending tweets to the LLM for summarization...")
         summary = LLM.chat(
             url=options.url,
             api_key=options.api_key,
@@ -757,7 +667,7 @@ class Pipeline:
             prompt=prompt,
         )
 
-        State.LOGGER.info("AI summary (final output):\n%s", summary)
+        Config.LOGGER.info("AI summary (final output):\n%s", summary)
 
         if options.output is not None:
             output = Path(options.output)
@@ -796,7 +706,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     collecting.add_argument(
-        "--no-fetch",
+        "--skip-fetch",
         dest="fetch",
         action="store_false",
         help="Skip tweet collection and summarize an existing feed.",
@@ -818,7 +728,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--format",
         "-f",
         dest="output_format",
-        choices=State.REPORT_FORMATS,
+        choices=Config.REPORT_FORMATS,
         default="html",
         help=(
             "Report format: 'html' converts to HTML under report/ "
@@ -837,20 +747,19 @@ def build_parser() -> argparse.ArgumentParser:
     llm = parser.add_argument_group("LLM connection")
     llm.add_argument(
         "--url",
-        default=os.environ.get("OPENAI_BASE_URL", State.DEFAULT_BASE_URL),
-        help="OpenAI-compatible API base URL (default: %(default)s).",
+        default=Config.DEFAULT_BASE_URL,
+        help="OpenAI-compatible API base URL (env: OPENAI_BASE_URL; default: %(default)s).",
     )
     llm.add_argument(
         "--api-key",
-        default=os.environ.get("OPENAI_API_KEY", State.DEFAULT_API_KEY),
-        help="API key (default: OPENAI_API_KEY or the built-in default).",
+        default=Config.DEFAULT_API_KEY,
+        help="API key (env: OPENAI_API_KEY; default: %(default)s).",
     )
     llm.add_argument(
         "--model",
-        default=os.environ.get("OPENAI_MODEL", State.DEFAULT_MODEL),
-        help="Model name (default: %(default)s).",
+        default=Config.DEFAULT_MODEL,
+        help="Model name (env: OPENAI_MODEL; default: %(default)s).",
     )
-
 
     parser.add_argument(
         "--quiet", "-q",
@@ -860,6 +769,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     return parser
 
+
 def setup_logger(level: int = logging.INFO) -> None:
     logging.basicConfig(
         level=level,
@@ -867,12 +777,14 @@ def setup_logger(level: int = logging.INFO) -> None:
         datefmt="%H:%M:%S",
     )
 
+
 def build_options(args: argparse.Namespace) -> RunOptions:
-    """Populate ``RunOptions`` straight from parsed arguments. """
+    """Populate ``RunOptions`` straight from parsed arguments."""
     known = {field.name for field in fields(RunOptions)}
     return RunOptions(
         **{name: value for name, value in vars(args).items() if name in known}
     )
+
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
@@ -883,8 +795,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         Pipeline.run(options)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
-        State.LOGGER.error("%s", exc)
+        Config.LOGGER.error("%s", exc)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
