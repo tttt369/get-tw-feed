@@ -32,6 +32,7 @@ class RunOptions:
     fetch: bool = True
     merge: bool = True
     include_old_posts: bool = False
+    include_seen: bool = False
 
     feed: str | None = None
     output: str | None = None
@@ -329,6 +330,7 @@ class Fetch:
         seen_ids: set[str],
         run_file: Path,
         now: datetime,
+        include_seen: bool = False,
     ) -> tuple[list[dict[str, Any]], set[str]]:
         """Collect the last 24 hours of tweets from ``usernames`` via search."""
 
@@ -359,10 +361,12 @@ class Fetch:
                         if tweet.user and tweet.user.username:
                             active_usernames.add(tweet.user.username)
 
-                        if tweet.id_str in seen_ids:
+                        is_new = tweet.id_str not in seen_ids
+                        if not is_new and not include_seen:
                             continue
+                        if is_new:
+                            Seen.record(seen_ids, run_file, tweet.id_str)
 
-                        Seen.record(seen_ids, run_file, tweet.id_str)
                         tweets.append(json.loads(tweet.json()))
             except Exception as exc:  # Keep one failing chunk from aborting the run.
                 Config.LOGGER.warning("Search failed for chunk %d: %s", index, exc)
@@ -378,6 +382,7 @@ class Fetch:
         seen_ids: set[str],
         run_file: Path,
         now: datetime,
+        include_seen: bool = False,
     ) -> list[dict[str, Any]]:
         """Collect not-yet-seen tweets from one user's timeline."""
 
@@ -414,10 +419,18 @@ class Fetch:
                     older.append((tweet, is_new))
 
         selected = recent or older
-        return [json.loads(tweet.json()) for tweet, is_new in selected if is_new]
+        return [
+            json.loads(tweet.json())
+            for tweet, is_new in selected
+            if is_new or include_seen
+        ]
 
     @staticmethod
-    async def run(include_old_posts: bool, merge: bool) -> None:
+    async def run(
+        include_old_posts: bool,
+        merge: bool,
+        include_seen: bool = False,
+    ) -> None:
         """Collect tweets and write them to the feed (see module docstring)."""
 
         now = datetime.now(timezone.utc)
@@ -434,7 +447,7 @@ class Fetch:
         output_path, existing_feed = Feed.resolve_output(now_jst, merge)
 
         recent_tweets, active_usernames = await Fetch.search_recent(
-            api, usernames, seen_ids, run_file, now
+            api, usernames, seen_ids, run_file, now, include_seen=include_seen
         )
         Config.LOGGER.info(
             "Search collected %d new tweets from %d active users",
@@ -451,7 +464,9 @@ class Fetch:
                 "Fetching timelines for %d inactive users", len(inactive_usernames)
             )
             for name in inactive_usernames:
-                tweets = await Fetch.user_timeline(api, name, seen_ids, run_file, now)
+                tweets = await Fetch.user_timeline(
+                    api, name, seen_ids, run_file, now, include_seen=include_seen
+                )
                 old_tweets.extend(tweets)
                 Config.LOGGER.info("Collected %d new tweets from %s", len(tweets), name)
         else:
@@ -620,8 +635,8 @@ class Pipeline:
         return prompt_path
 
     @staticmethod
-    def run(options: RunOptions) -> str:
-        """Run the requested stages and return the summary text."""
+    def run(options: RunOptions) -> Path:
+        """Run the requested stages and return the path to the written file."""
 
         if options.fetch:
             Config.LOGGER.info("Collecting tweets...")
@@ -629,6 +644,7 @@ class Pipeline:
                 Fetch.run(
                     include_old_posts=options.include_old_posts,
                     merge=options.merge,
+                    include_seen=options.include_seen,
                 )
             )
         else:
@@ -650,14 +666,13 @@ class Pipeline:
             )
 
         prompt = Pipeline.build_prompt(simplified)
-        Pipeline.save_prompt(feed_path, prompt)
+        prompt_path = Pipeline.save_prompt(feed_path, prompt)
 
         if options.prompt_only:
             Config.LOGGER.info(
                 "Skipping LLM request and report generation (--prompt-only)."
             )
-            print(prompt)
-            return prompt
+            return prompt_path
 
         Config.LOGGER.info("Sending tweets to the LLM for summarization...")
         summary = LLM.chat(
@@ -674,8 +689,7 @@ class Pipeline:
         else:
             output = Report.default_path(feed_path)
 
-        Report.save(output, summary, output_format=options.output_format)
-        return summary
+        return Report.save(output, summary, output_format=options.output_format)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -694,6 +708,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Also fetch older tweets from inactive users and include "
             "posts of any age in the summary (default: only the last "
             "two days)."
+        ),
+    )
+    collecting.add_argument(
+        "--include-seen",
+        action="store_true",
+        help=(
+            "Include tweets whose IDs were already recorded in seen/ "
+            "(disables cross-run deduplication for this run; newly seen "
+            "IDs are still recorded)."
         ),
     )
     collecting.add_argument(
