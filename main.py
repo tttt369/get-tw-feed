@@ -38,6 +38,7 @@ class RunOptions:
     output: str | None = None
     output_format: str = "html"
     prompt_only: bool = False
+    result_file: str | None = None
 
 
 class Post:
@@ -766,6 +767,14 @@ def build_parser() -> argparse.ArgumentParser:
             "and report generation."
         ),
     )
+    reporting.add_argument(
+        "--result-file",
+        default=None,
+        help=(
+            "Write the path of the file produced by the run "
+            "(feed, prompt, or report) to this file."
+        ),
+    )
 
     llm = parser.add_argument_group("LLM connection")
     llm.add_argument(
@@ -816,10 +825,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     options = build_options(args)
 
     try:
-        Pipeline.run(options)
+        result = Pipeline.run(options)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         Config.LOGGER.error("%s", exc)
         sys.exit(1)
+
+    if options.result_file is not None:
+        result_path = Path(options.result_file)
+        try:
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(f"{result}\n", encoding="utf-8")
+            Config.LOGGER.info("Wrote result path to: %s", result_path)
+        except OSError as exc:
+            Config.LOGGER.error(
+                "Could not write result path to %s: %s", result_path, exc
+            )
+            sys.exit(1)
 
 
 if __name__ == "__main__":
