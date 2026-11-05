@@ -697,7 +697,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     collecting.add_argument(
-        "--no-merge",
+        "--skip-merge",
         dest="merge",
         action="store_false",
         help=(
