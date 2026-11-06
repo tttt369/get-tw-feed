@@ -44,20 +44,17 @@ class Config:
 - 不明
 
 【要件】
-1. 上記の分類ごとにセクション（##）を設け、誰がどのような発言・投稿を行っているかをまとめてください。
-2. ユーザーの投稿ごとに必ずインデント（字下げ）を空け、見出しや箇条書きの階層構造を明確にしてください。
-3. ソース項目には、余計な日本語の補足説明（アーティスト名、曲名、動画タイトルなど）を絶対に追加しないでください。URLのテキストリンク自体も、説明文にせずURLをそのまま書き込んでください。
+1. 上記の分類ごとにセクション(##)を設け、誰がどのような発言・投稿を行っているかをまとめてください。
+2. 各ユーザーの投稿内容は、ユーザー名(###)の下に箇条書き（* ）の形式で記載してください。
+3. 発言内容の要約の末尾に、必ず [ソース](URL) という形式で該当するTwitter/XのURLをテキストリンクとして挿入してください。リンクの文言は「ソース」の2文字のみとし、余計な日本語の補足説明（アーティスト名、曲名、動画タイトルなど）は絶対に追加しないでください。
 
-【出力フォーマット（厳密遵守）】
+【出力フォーマット(厳密遵守)】
 必ず以下の構造と文字列のみを使用し、完全に固定した形で出力してください。
 
 ## [分類名]
 
 ### [ユーザー名]
-* **内容**: 
-    * [発言内容の要約]
-    * **ソース**:
-        * 記載リンク: [URLをそのまま記述]
+* [発言内容の要約]。[ソース]([URLをそのまま記述])
 """
 
     HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -67,6 +64,15 @@ class Config:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
 <style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --text: #e6edf3;
+    --heading: #f0f6fc;
+    --border: #30363d;
+    --link: #58a6ff;
+  }
+
   body {
     margin: 0 auto;
     padding: 2rem 1.25rem 4rem;
@@ -74,26 +80,70 @@ class Config:
     line-height: 1.75;
     font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic",
       Meiryo, system-ui, -apple-system, sans-serif;
-    color: #1f2328;
-    background: #ffffff;
+    color: var(--text);
+    background: var(--bg);
   }
+
   h1 {
     margin: 0 0 1.5rem;
     padding-bottom: 0.6rem;
     font-size: 1.6rem;
-    border-bottom: 2px solid #d0d7de;
+    color: var(--heading);
+    border-bottom: 2px solid var(--border);
   }
+
   h2 {
     margin-top: 2.2rem;
     padding-bottom: 0.3rem;
     font-size: 1.3rem;
-    border-bottom: 1px solid #eaeef2;
+    color: var(--heading);
+    border-bottom: 1px solid var(--border);
   }
-  h3 { margin-top: 1.6rem; font-size: 1.05rem; }
-  a { color: #0969da; }
-  ul { padding-left: 1.4rem; }
-  li { margin: 0.3rem 0; }
-  hr { border: 0; border-top: 1px solid #d0d7de; }
+
+  h3 {
+    margin-top: 1.6rem;
+    font-size: 1.05rem;
+    color: var(--heading);
+  }
+
+  a {
+    color: var(--link);
+  }
+
+  a:hover {
+    color: #79c0ff;
+  }
+
+  ul {
+    padding-left: 1.4rem;
+  }
+
+  li {
+    margin: 0.3rem 0;
+  }
+
+  hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  code, pre {
+    color: var(--text);
+    background: #161b22;
+  }
+
+  blockquote {
+    margin-left: 0;
+    padding: 0.5rem 1rem;
+    border-left: 3px solid #484f58;
+    background: #161b22;
+    color: #b1bac4;
+  }
+
+  ::selection {
+    color: #ffffff;
+    background: #264f78;
+  }
 </style>
 </head>
 <body>

@@ -627,17 +627,9 @@ class Pipeline:
 
     @staticmethod
     def build_static_report(simplified: dict[str, Any]) -> str:
-        """Generate a fallback report from feed data when the LLM fails.
+        """Generate a fallback report from feed data when the LLM fails."""
 
-        Emits one Markdown section per user, following this shape::
-
-            ### [ユーザー名]
-            * **内容**: ...
-                * **ソース**:
-                    * 記載リンク: https://x.com/i/status/...
-        """
-
-        lines: list[str] = []
+        lines: list[str] = ["## 不明", ""]
 
         for user_info in simplified.values():
             posts = user_info.get("posts") or {}
@@ -650,15 +642,16 @@ class Pipeline:
             for post in posts.values():
                 content = str(post.get("rawContent") or "").replace("\r\n", "\n")
                 content = content.replace("\n", " ").strip()
+                if not content.endswith(("。", "！", "？", "!", "?")):
+                    content += "。"
                 url = str(post.get("url") or "")
 
-                lines.append(f"* **内容**: {content}")
-                lines.append("    * **ソース**:")
-                lines.append(f"        * 記載リンク: {url}")
-                lines.append("")
+                lines.append(f"* {content}[ソース]({url})")
 
-        if not lines:
-            return "### 報告\n* **内容**: 対象期間内に取得できた投稿はありません。\n"
+            lines.append("")
+
+        if len(lines) == 2:
+            return "## 不明\n\n* 対象期間内に取得できた投稿はありません。\n"
 
         return "\n".join(lines).rstrip() + "\n"
 
