@@ -38,6 +38,7 @@ class RunOptions:
     output: str | None = None
     output_format: str = "html"
     prompt_only: bool = False
+    static_report: bool = False
     result_file: str | None = None
 
 
@@ -705,21 +706,27 @@ class Pipeline:
             )
             return prompt_path
 
-        try:
-            Config.LOGGER.info("Sending tweets to the LLM for summarization...")
-            summary = LLM.chat(
-                url=options.url,
-                api_key=options.api_key,
-                model=options.model,
-                prompt=prompt,
-            )
-            Config.LOGGER.info("AI summary (final output):\n%s", summary)
-        except Exception as exc:  # noqa: BLE001 - fall back on any LLM failure
-            Config.LOGGER.warning("LLM request failed: %s", exc)
+        if options.static_report:
             Config.LOGGER.info(
-                "Falling back to static report generated from feed data."
+                "Skipping LLM request; building static report (--static-report)."
             )
             summary = Pipeline.build_static_report(simplified)
+        else:
+            try:
+                Config.LOGGER.info("Sending tweets to the LLM for summarization...")
+                summary = LLM.chat(
+                    url=options.url,
+                    api_key=options.api_key,
+                    model=options.model,
+                    prompt=prompt,
+                )
+                Config.LOGGER.info("AI summary (final output):\n%s", summary)
+            except Exception as exc:  # noqa: BLE001 - fall back on any LLM failure
+                Config.LOGGER.warning("LLM request failed: %s", exc)
+                Config.LOGGER.info(
+                    "Falling back to static report generated from feed data."
+                )
+                summary = Pipeline.build_static_report(simplified)
 
         if options.output is not None:
             output = Path(options.output)
@@ -801,6 +808,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Save the prompt to prompt/ but skip the LLM request "
             "and report generation."
+        ),
+    )
+    reporting.add_argument(
+        "--static-report",
+        action="store_true",
+        help=(
+            "Skip the LLM request and build the report directly from "
+            "feed data using the static fallback formatter. Ignored "
+            "when --prompt-only is also given."
         ),
     )
     reporting.add_argument(
