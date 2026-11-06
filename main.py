@@ -627,6 +627,16 @@ class Pipeline:
         )
 
     @staticmethod
+    def _escape_leading_marker(text: str) -> str:
+        """Escape a leading markdown block marker so a tweet that happens to
+        start with '#', '>', '-', or '+' is rendered as literal text inside
+        the list item instead of being parsed as a heading, blockquote, or
+        nested list."""
+        if text and text[0] in "#>-+":
+            return "\\" + text
+        return text
+
+    @staticmethod
     def build_static_report(simplified: dict[str, Any]) -> str:
         """Generate a fallback report from feed data when the LLM fails."""
 
@@ -645,6 +655,7 @@ class Pipeline:
                 content = content.replace("\n", " ").strip()
                 if not content.endswith(("。", "！", "？", "!", "?")):
                     content += "。"
+                content = Pipeline._escape_leading_marker(content)
                 url = str(post.get("url") or "")
 
                 lines.append(f"* {content}[ソース]({url})")
