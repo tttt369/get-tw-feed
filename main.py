@@ -626,6 +626,43 @@ class Pipeline:
         )
 
     @staticmethod
+    def build_static_report(simplified: dict[str, Any]) -> str:
+        """Generate a fallback report from feed data when the LLM fails.
+
+        Emits one Markdown section per user, following this shape::
+
+            ### [ユーザー名]
+            * **内容**: ...
+                * **ソース**:
+                    * 記載リンク: https://x.com/i/status/...
+        """
+
+        lines: list[str] = []
+
+        for user_info in simplified.values():
+            posts = user_info.get("posts") or {}
+            if not posts:
+                continue
+
+            displayname = str(user_info.get("displayname") or "Unknown")
+            lines.append(f"### {displayname}")
+
+            for post in posts.values():
+                content = str(post.get("rawContent") or "").replace("\r\n", "\n")
+                content = content.replace("\n", " ").strip()
+                url = str(post.get("url") or "")
+
+                lines.append(f"* **内容**: {content}")
+                lines.append("    * **ソース**:")
+                lines.append(f"        * 記載リンク: {url}")
+                lines.append("")
+
+        if not lines:
+            return "### 報告\n* **内容**: 対象期間内に取得できた投稿はありません。\n"
+
+        return "\n".join(lines).rstrip() + "\n"
+
+    @staticmethod
     def save_prompt(feed_path: Path, prompt: str) -> Path:
         """Save the prompt text to the prompt/ directory."""
 
@@ -675,15 +712,21 @@ class Pipeline:
             )
             return prompt_path
 
-        Config.LOGGER.info("Sending tweets to the LLM for summarization...")
-        summary = LLM.chat(
-            url=options.url,
-            api_key=options.api_key,
-            model=options.model,
-            prompt=prompt,
-        )
-
-        Config.LOGGER.info("AI summary (final output):\n%s", summary)
+        try:
+            Config.LOGGER.info("Sending tweets to the LLM for summarization...")
+            summary = LLM.chat(
+                url=options.url,
+                api_key=options.api_key,
+                model=options.model,
+                prompt=prompt,
+            )
+            Config.LOGGER.info("AI summary (final output):\n%s", summary)
+        except Exception as exc:  # noqa: BLE001 - fall back on any LLM failure
+            Config.LOGGER.warning("LLM request failed: %s", exc)
+            Config.LOGGER.info(
+                "Falling back to static report generated from feed data."
+            )
+            summary = Pipeline.build_static_report(simplified)
 
         if options.output is not None:
             output = Path(options.output)
